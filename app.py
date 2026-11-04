@@ -7,7 +7,8 @@ import pandas as pd
 import requests
 from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file, abort
 from werkzeug.utils import secure_filename
-from v5_engine import predict_v5, select_daily
+from v5_engine import select_daily
+from v5_fast_engine import predict_v5_fast
 from pdf_parser import extract
 
 ROOT=Path(__file__).resolve().parent
@@ -115,10 +116,25 @@ def master():
     if not years:return None
     return pd.concat([norm(pd.read_csv(download_year(y),low_memory=False)) for y in years],ignore_index=True)
 
-def master_bytes():
-    m=master()
-    if m is None:raise ValueError('Upload yearly Master CSVs to Supabase Storage first.')
-    return m.to_csv(index=False).encode('utf-8')
+def master_stats(years, missing_start=None, missing_end=None):
+    """Count records and dates without materialising the entire Master."""
+    total=0; recorded=set()
+    for year in years:
+        for part in pd.read_csv(download_year(year),usecols=['RaceDate'],chunksize=30000):
+            total+=len(part)
+            d=pd.to_datetime(part['RaceDate'],format='%d-%b-%y',errors='coerce')
+            if d.isna().any():raise ValueError(f'Invalid RaceDate in {year} Master')
+            recorded.update(d.dt.date.unique())
+    if not recorded:return None,[]
+    stats={'runners':total,'dates':len(recorded),'first':min(recorded).strftime('%d %b %Y'),
+           'last':max(recorded).strftime('%d %b %Y')}
+    missing=[]
+    if missing_start is not None and missing_end is not None:
+        start=pd.to_datetime(missing_start,errors='coerce')
+        end=pd.to_datetime(missing_end,errors='coerce')
+        if pd.notna(start) and pd.notna(end) and start<=end and (end-start).days<=1500:
+            missing=[d.date().isoformat() for d in pd.date_range(start,end) if d.date() not in recorded]
+    return stats,missing
 
 def keys(df):
     return pd.MultiIndex.from_arrays([pd.to_datetime(df.RaceDate,format='%d-%b-%y').dt.strftime('%Y-%m-%d'),df.Course.astype(str).str.strip().str.casefold(),df.RaceTime.astype(str).str.strip(),df.HorseName.astype(str).str.strip().str.casefold()])
@@ -139,45 +155,58 @@ def data():
         try:
             action=request.form.get('action')
             if action=='merge':
-                m=master()
-                if m is None:raise ValueError('Upload yearly Master CSVs to Supabase Storage first.')
+                if request.form.get('verified')!='yes':raise ValueError('Confirm that you have verified these results.')
                 f=request.files.get('results')
                 if not f or not f.filename.lower().endswith('.csv'):raise ValueError('Choose a results CSV.')
-                incoming=norm(pd.read_csv(io.BytesIO(f.read()),low_memory=False))
-                missing=[c for c in m.columns if c not in incoming]
-                if missing:raise ValueError('Missing master fields: '+', '.join(missing))
-                incoming=incoming.reindex(columns=m.columns)
-                k=keys(incoming);new=incoming.loc[~k.isin(keys(m)) & ~k.duplicated()].copy()
-                if request.form.get('verified')!='yes':raise ValueError('Confirm that you have verified these results.')
-                if len(new):
-                    years=pd.to_datetime(new.RaceDate,format='%d-%b-%y').dt.year
-                    for year,part in new.groupby(years):
-                        existing=m.loc[pd.to_datetime(m.RaceDate,format='%d-%b-%y').dt.year==year]
-                        combined=pd.concat([existing,part],ignore_index=True)
+                incoming=norm(pd.read_csv(f,low_memory=False))
+                year_groups=incoming.groupby(pd.to_datetime(incoming.RaceDate,format='%d-%b-%y').dt.year)
+                existing_years=set(storage_years())
+                count=0
+                for year,part in year_groups:
+                    if year not in existing_years:raise ValueError(f'No existing {year} Master in Storage')
+                    existing=norm(pd.read_csv(download_year(year),low_memory=False))
+                    missing=[c for c in existing.columns if c not in part]
+                    # Missing fields may be left empty; required identity fields were checked by norm().
+                    part=part.reindex(columns=existing.columns)
+                    k=keys(part)
+                    new=part.loc[~k.isin(keys(existing)) & ~k.duplicated()].copy()
+                    if len(new):
+                        combined=pd.concat([existing,new],ignore_index=True)
                         upload_year(year,combined)
-                flash(f'Merged {len(new):,} new runner records into permanent yearly Supabase Storage.','success')
+                        count+=len(new)
+                    del existing,part,new
+                flash(f'Merged {count:,} new runner records into permanent yearly Supabase Storage.','success')
             else:raise ValueError('Unknown action')
         except Exception as e:flash(str(e),'error')
         return redirect(url_for('data'))
-    m=None;stats=None;missing=[];storage_error=None;years=[]
+    stats=None;missing=[];storage_error=None;years=[]
     try:
-        years=storage_years();m=master() if years else None
+        years=storage_years()
+        if years:
+            stats,missing=master_stats(years,
+                request.args.get('start') if request.args.get('missing')=='1' else None,
+                request.args.get('end') if request.args.get('missing')=='1' else None)
     except Exception as e:storage_error=str(e)
-    if m is not None:
-        dt=pd.to_datetime(m.RaceDate,format='%d-%b-%y')
-        stats={'runners':len(m),'dates':dt.nunique(),'first':dt.min().strftime('%d %b %Y'),'last':dt.max().strftime('%d %b %Y')}
-        if request.args.get('missing')=='1':
-            start=pd.to_datetime(request.args.get('start',dt.min().date().isoformat()),errors='coerce')
-            end=pd.to_datetime(request.args.get('end',(date.today()-timedelta(days=1)).isoformat()),errors='coerce')
-            if pd.notna(start) and pd.notna(end) and start<=end and (end-start).days<=1500:
-                recorded=set(dt.dt.date);missing=[d.date().isoformat() for d in pd.date_range(start,end) if d.date() not in recorded]
     return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET)
 
 @app.get('/master/download')
 @protected
 def download_master():
-    payload=master_bytes()
-    return send_file(io.BytesIO(payload),as_attachment=True,download_name='V5_Master_UPDATED.csv',mimetype='text/csv')
+    # Stream existing year files without a second full in-memory DataFrame.
+    from flask import Response, stream_with_context
+    import csv
+    years=storage_years()
+    if not years:raise ValueError('No Master CSVs found')
+    def generate():
+        first=True
+        for year in years:
+            with open(download_year(year),'r',encoding='utf-8-sig',newline='') as fh:
+                if first:
+                    yield fh.readline();first=False
+                else:fh.readline()
+                for line in fh:yield line
+    return Response(stream_with_context(generate()),mimetype='text/csv',headers={
+        'Content-Disposition':'attachment; filename="V5_Master_UPDATED.csv"'})
 
 class PDFUpload:
     def __init__(self,f):self.name=secure_filename(f.filename);self._bytes=f.read()
@@ -203,8 +232,9 @@ def selections():
             if request.form.get('verified')!='yes':raise ValueError('Please confirm you have checked the racecards.')
             for col in ('Jockey','Trainer','Distance'):
                 if col not in runners:runners[col]=''
-            history_payload=master_bytes()  # Load historical CSVs once, not twice.
-            predictions=predict_v5(history_payload,runners,MODEL.read_bytes(),day)
+            year_files=[download_year(y) for y in storage_years()]
+            if not year_files:raise ValueError("Upload yearly Master CSVs first")
+            predictions=predict_v5_fast(year_files,runners,MODEL,day)
             selected=select_daily(predictions).copy()
             selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
             selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
