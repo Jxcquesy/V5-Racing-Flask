@@ -10,6 +10,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from werkzeug.utils import secure_filename
 from v5_engine import select_daily
 from v5_fast_engine import predict_v5_fast
+from v5_feature_reference import FEATURES as MODEL_FEATURES
 from pdf_parser import extract
 
 ROOT=Path(__file__).resolve().parent
@@ -106,8 +107,7 @@ def active_model_path():
             for chunk in r.iter_content(chunk_size=1024*1024):
                 if chunk:out.write(chunk)
         candidate=joblib.load(tmp)
-        baseline=joblib.load(MODEL)
-        if candidate.get('features')!=baseline.get('features'):
+        if candidate.get('features')!=MODEL_FEATURES:
             raise ValueError('Published model feature list does not match this V5 website.')
         if not hasattr(candidate.get('model'),'predict_proba'):
             raise ValueError('Published model is missing predict_proba.')
