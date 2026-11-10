@@ -9,10 +9,12 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from werkzeug.utils import secure_filename
 from v5_engine import select_daily
 from v5_fast_engine import predict_v5_fast
+from v5_training import train_daily_model
 from pdf_parser import extract
 
 ROOT=Path(__file__).resolve().parent
 MODEL=ROOT/'v5_top3_model.joblib'
+TRAINING_STATUS=INSTANCE/'v5_training_status.json' if 'INSTANCE' in globals() else ROOT/'instance'/'v5_training_status.json'
 KEY=['RaceDate','Course','RaceTime','HorseName']
 app=Flask(__name__)
 app.secret_key=os.getenv('SECRET_KEY') or secrets.token_hex(32)
@@ -232,9 +234,37 @@ def selections():
             if request.form.get('verified')!='yes':raise ValueError('Please confirm you have checked the racecards.')
             for col in ('Jockey','Trainer','Distance'):
                 if col not in runners:runners[col]=''
-            year_files=[download_year(y) for y in storage_years()]
-            if not year_files:raise ValueError("Upload yearly Master CSVs first")
+            available_years=[y for y in storage_years() if y>=2025]
+            year_files=[download_year(y) for y in available_years]
+            if not year_files:raise ValueError("Upload Master CSVs from 2025 onwards first")
+
+            # Retrain once per prediction date, and again if the source files change.
+            # The training function uses 1 Jan 2025 through the latest available day
+            # before this race date. A failed retrain leaves the last good model intact.
+            signature='|'.join(f"{p.name}:{p.stat().st_size}:{p.stat().st_mtime_ns}" for p in year_files)
+            try:
+                status=json.loads(TRAINING_STATUS.read_text()) if TRAINING_STATUS.exists() else {}
+            except Exception:
+                status={}
+            retrain_needed=(status.get('training_day')!=day.isoformat() or status.get('source_signature')!=signature)
+            training_warning=None
+            if retrain_needed:
+                try:
+                    trained=train_daily_model(year_files,MODEL,day,signature)
+                    status={**trained,'source_signature':signature,'status':'success'}
+                    TRAINING_STATUS.parent.mkdir(parents=True,exist_ok=True)
+                    TRAINING_STATUS.write_text(json.dumps(status))
+                except Exception as train_error:
+                    training_warning=f"Daily retraining could not complete ({train_error}). V5 is using its last successfully saved model."
+                    if not MODEL.exists():
+                        raise RuntimeError(training_warning)
+            if not MODEL.exists():
+                raise RuntimeError("No trained V5 model is available.")
             predictions=predict_v5_fast(year_files,runners,MODEL,day)
+            if training_warning:
+                flash(training_warning,'error')
+            else:
+                flash(f"AI retrained for {day:%d %b %Y} using results from 1 Jan 2025 to {status.get('trained_until','the latest available date')}.",'success')
             selected=select_daily(predictions).copy()
             selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
             selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
