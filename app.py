@@ -1,4 +1,4 @@
-"""V5 Flask replacement. Keeps the supplied frozen model and feature pipeline."""
+"""V5 Flask application with daily expanding-window Top-3 model retraining."""
 import io, os, secrets, json, math, re, time
 from datetime import date, timedelta
 from functools import wraps
@@ -14,7 +14,6 @@ from pdf_parser import extract
 
 ROOT=Path(__file__).resolve().parent
 MODEL=ROOT/'v5_top3_model.joblib'
-TRAINING_STATUS=INSTANCE/'v5_training_status.json' if 'INSTANCE' in globals() else ROOT/'instance'/'v5_training_status.json'
 KEY=['RaceDate','Course','RaceTime','HorseName']
 app=Flask(__name__)
 app.secret_key=os.getenv('SECRET_KEY') or secrets.token_hex(32)
@@ -22,6 +21,7 @@ app.config['MAX_CONTENT_LENGTH']=49*1024*1024
 # The session cookie holds only small state; master CSV is kept in a local instance file.
 # On Render free hosting this file is EPHEMERAL and may disappear on redeploy/restart.
 INSTANCE=Path(app.instance_path); INSTANCE.mkdir(parents=True,exist_ok=True)
+TRAINING_STATUS=INSTANCE/'v5_training_status.json'
 
 def protected(fn):
     @wraps(fn)
@@ -252,10 +252,12 @@ def selections():
                 status={}
             retrain_needed=(status.get('training_day')!=day.isoformat() or status.get('source_signature')!=signature)
             training_warning=None
+            did_retrain=False
             if retrain_needed:
                 try:
                     trained=train_daily_model(year_files,MODEL,day,signature)
                     status={**trained,'source_signature':signature,'status':'success'}
+                    did_retrain=True
                     TRAINING_STATUS.parent.mkdir(parents=True,exist_ok=True)
                     TRAINING_STATUS.write_text(json.dumps(status))
                 except Exception as train_error:
@@ -267,8 +269,10 @@ def selections():
             predictions=predict_v5_fast(year_files,runners,MODEL,day)
             if training_warning:
                 flash(training_warning,'error')
-            else:
+            elif did_retrain:
                 flash(f"AI retrained for {day:%d %b %Y} using results from 1 Jan 2025 to {status.get('trained_until','the latest available date')}.",'success')
+            else:
+                flash(f"Today's V5 model is ready. Its latest training data runs through {status.get('trained_until','the latest available date')}.",'success')
             selected=select_daily(predictions).copy()
             selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
             selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
