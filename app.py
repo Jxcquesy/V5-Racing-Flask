@@ -88,8 +88,8 @@ def latest_model_path():
             if bundle.get('features') != FEATURES or bundle.get('target') != 'top3':
                 raise ValueError('Downloaded model feature/target schema does not match this V5 app.')
             temp.replace(cached)
-            app.logger.info(
-                'Using daily V5 model trained through %s (%s rows).',
+            app.logger.warning(
+                '[V5_MODEL] DOWNLOADED FROM SUPABASE — trained through %s (%s rows).',
                 bundle.get('training_end', bundle.get('cutoff', 'unknown')),
                 bundle.get('training_rows', 'unknown')
             )
@@ -102,11 +102,11 @@ def latest_model_path():
             try:
                 bundle = joblib.load(cached)
                 if isinstance(bundle, dict) and callable(getattr(bundle.get('model'), 'predict_proba', None)) and bundle.get('features') == FEATURES and bundle.get('target') == 'top3':
-                    app.logger.warning('Using previously downloaded V5 model cache.')
+                    app.logger.warning('[V5_MODEL] USING PREVIOUSLY DOWNLOADED CACHE — latest Supabase download failed.')
                     return cached
             except Exception as cache_exc:
                 app.logger.warning('Cached V5 model is invalid: %s', cache_exc)
-        app.logger.warning('Falling back to bundled V5 model.')
+        app.logger.error('[V5_MODEL] FALLING BACK TO BUNDLED MODEL — no valid Supabase model or cache was available.')
         return MODEL
 
 def storage_years():
