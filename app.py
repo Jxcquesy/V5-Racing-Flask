@@ -5,10 +5,12 @@ from functools import wraps
 from pathlib import Path
 import pandas as pd
 import requests
+import joblib
 from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file, abort
 from werkzeug.utils import secure_filename
 from v5_engine import select_daily
 from v5_fast_engine import predict_v5_fast
+from v5_feature_reference import FEATURES
 from pdf_parser import extract
 
 ROOT=Path(__file__).resolve().parent
@@ -63,6 +65,49 @@ def storage_headers(content_type=None):
     h={'apikey':key,'Authorization':'Bearer '+key}
     if content_type:h['Content-Type']=content_type
     return h
+
+def latest_model_path():
+    """Fetch and validate today's model; fall back to last cached or bundled model."""
+    cached = INSTANCE/'v5_top3_model.latest.joblib'
+    temp = INSTANCE/'v5_top3_model.latest.tmp'
+    try:
+        url,_ = storage_config()
+        response = requests.get(
+            f'{url}/storage/v1/object/{BUCKET}/models/v5_top3_model.joblib',
+            headers=storage_headers(), timeout=45, stream=True
+        )
+        response.raise_for_status()
+        try:
+            with temp.open('wb') as out:
+                for chunk in response.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        out.write(chunk)
+            bundle = joblib.load(temp)
+            if not isinstance(bundle, dict) or not callable(getattr(bundle.get('model'), 'predict_proba', None)):
+                raise ValueError('Downloaded model bundle is invalid.')
+            if bundle.get('features') != FEATURES or bundle.get('target') != 'top3':
+                raise ValueError('Downloaded model feature/target schema does not match this V5 app.')
+            temp.replace(cached)
+            app.logger.info(
+                'Using daily V5 model trained through %s (%s rows).',
+                bundle.get('training_end', bundle.get('cutoff', 'unknown')),
+                bundle.get('training_rows', 'unknown')
+            )
+            return cached
+        finally:
+            temp.unlink(missing_ok=True)
+    except Exception as exc:
+        app.logger.warning('Could not fetch latest V5 model: %s', exc)
+        if cached.exists():
+            try:
+                bundle = joblib.load(cached)
+                if isinstance(bundle, dict) and callable(getattr(bundle.get('model'), 'predict_proba', None)) and bundle.get('features') == FEATURES and bundle.get('target') == 'top3':
+                    app.logger.warning('Using previously downloaded V5 model cache.')
+                    return cached
+            except Exception as cache_exc:
+                app.logger.warning('Cached V5 model is invalid: %s', cache_exc)
+        app.logger.warning('Falling back to bundled V5 model.')
+        return MODEL
 
 def storage_years():
     url,_=storage_config()
@@ -234,7 +279,7 @@ def selections():
                 if col not in runners:runners[col]=''
             year_files=[download_year(y) for y in storage_years()]
             if not year_files:raise ValueError("Upload yearly Master CSVs first")
-            predictions=predict_v5_fast(year_files,runners,MODEL,day)
+            predictions=predict_v5_fast(year_files,runners,latest_model_path(),day)
             selected=select_daily(predictions).copy()
             selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
             selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
