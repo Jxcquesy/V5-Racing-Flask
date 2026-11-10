@@ -10,6 +10,7 @@ import sys
 import tempfile
 import traceback
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from urllib.parse import quote
 
@@ -121,7 +122,8 @@ def run_training():
         dates = pd.to_datetime(raw["RaceDate"], format="%d-%b-%y", errors="coerce")
         if dates.isna().any():
             dates = pd.to_datetime(raw["RaceDate"], dayfirst=True, errors="coerce")
-        raw = raw.loc[dates.ge(START_DATE)].copy()
+        target_day = pd.Timestamp(datetime.now(ZoneInfo("Europe/London")).date())
+        raw = raw.loc[dates.ge(START_DATE) & dates.lt(target_day)].copy()
         raw["RaceDate"] = dates.loc[raw.index].dt.strftime("%d-%b-%y")
         if raw.empty:
             raise RuntimeError("No master results found from 1 January 2025 onwards.")
@@ -167,6 +169,7 @@ def run_training():
             "cutoff": latest_date.strftime("%Y-%m-%d"),
             "training_start": START_DATE.strftime("%Y-%m-%d"),
             "training_end": latest_date.strftime("%Y-%m-%d"),
+            "prediction_day": target_day.strftime("%Y-%m-%d"),
             "training_rows": int(len(train)),
             "target": "top3",
             "model_version": "daily-v1",
