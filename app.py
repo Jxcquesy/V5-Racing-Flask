@@ -1,5 +1,6 @@
 """V5 Flask replacement. Keeps the supplied frozen model and feature pipeline."""
 import io, os, secrets, json, math, re, time
+import joblib
 from datetime import date, timedelta
 from functools import wraps
 from pathlib import Path
@@ -87,6 +88,45 @@ def download_year(year,force=False):
     finally:
         tmp.unlink(missing_ok=True)
     return p
+
+def active_model_path():
+    """Fetch the latest validated model from private Storage; never block fallback."""
+    cached=INSTANCE/'v5_top3_model_active.joblib'
+    if cached.exists() and time.time()-cached.stat().st_mtime<300:
+        return cached
+    tmp=cached.with_suffix('.tmp')
+    try:
+        url,_=storage_config()
+        r=requests.get(f'{url}/storage/v1/object/{BUCKET}/models/v5_top3_model.joblib',
+                       headers=storage_headers(),timeout=90,stream=True)
+        if r.status_code==404:
+            return cached if cached.exists() else MODEL
+        r.raise_for_status()
+        with tmp.open('wb') as out:
+            for chunk in r.iter_content(chunk_size=1024*1024):
+                if chunk:out.write(chunk)
+        candidate=joblib.load(tmp)
+        baseline=joblib.load(MODEL)
+        if candidate.get('features')!=baseline.get('features'):
+            raise ValueError('Published model feature list does not match this V5 website.')
+        if not hasattr(candidate.get('model'),'predict_proba'):
+            raise ValueError('Published model is missing predict_proba.')
+        tmp.replace(cached)
+        return cached
+    except Exception:
+        return cached if cached.exists() else MODEL
+    finally:
+        tmp.unlink(missing_ok=True)
+
+def training_status():
+    try:
+        url,_=storage_config()
+        r=requests.get(f'{url}/storage/v1/object/{BUCKET}/models/training_status.json',
+                       headers=storage_headers(),timeout=15)
+        if not r.ok:return None
+        return r.json()
+    except Exception:
+        return None
 
 def upload_year(year,df):
     url,_=storage_config();p=yearly_path(year)
@@ -187,7 +227,7 @@ def data():
                 request.args.get('start') if request.args.get('missing')=='1' else None,
                 request.args.get('end') if request.args.get('missing')=='1' else None)
     except Exception as e:storage_error=str(e)
-    return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET)
+    return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET,training_status=training_status())
 
 @app.get('/master/download')
 @protected
@@ -234,7 +274,7 @@ def selections():
                 if col not in runners:runners[col]=''
             year_files=[download_year(y) for y in storage_years()]
             if not year_files:raise ValueError("Upload yearly Master CSVs first")
-            predictions=predict_v5_fast(year_files,runners,MODEL,day)
+            predictions=predict_v5_fast(year_files,runners,active_model_path(),day)
             selected=select_daily(predictions).copy()
             selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
             selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
