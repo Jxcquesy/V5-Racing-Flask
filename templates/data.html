@@ -8,4 +8,18 @@
 </section>
 {% if stats %}<section class="card"><h2>Find missing dates</h2><form method="get"><input type="hidden" name="missing" value="1"><div class="two"><label>From<input type="date" name="start" required></label><label>To<input type="date" name="end" value="{{today}}" required></label></div><button>Find dates</button></form>{% if request.args.get('missing') %}<p>{{missing|length}} missing calendar dates (may include days without racing)</p><div class="dates">{{missing|join(', ')}}</div>{% endif %}</section>
 <section class="card"><h2>Import verified results</h2><p>New verified runners will be saved to their corresponding yearly CSV in Supabase Storage. Keep independent backups before updating.</p><form method="post" enctype="multipart/form-data"><input type="hidden" name="action" value="merge"><label>Results CSV (same master columns)<input type="file" name="results" accept=".csv" required></label><label class="check"><input type="checkbox" name="verified" value="yes" required> I verified these results and want to merge new runner records</label><button class="primary">Merge verified records</button></form></section>{% endif %}
-<section class="card"><h2>🧠 Retrain V5 AI</h2><p>Not available yet: the supplied repository has inference and a trained model, but no validated training pipeline. Automatic results fetching is also not implemented.</p><button disabled>Retrain AI (not yet available)</button></section>{% endblock %}
+<section class="card"><h2>🧠 V5 model training</h2>
+{% if training_status and training_status.status == 'success' %}
+<p class="success">Latest training completed successfully.</p>
+<p>Training data: {{training_status.training_start}} to {{training_status.training_end}}</p>
+<p>Training runners: {{'{:,}'.format(training_status.training_rows|int)}}</p>
+<p>Completed: {{training_status.finished_at_utc}}</p>
+{% elif training_status and training_status.status == 'failed' %}
+<p class="error">Latest training failed: {{training_status.message}}</p>
+<p>{{training_status.finished_at_utc}}</p>
+{% else %}
+<p>No successful daily training has been published yet. The existing bundled model remains active.</p>
+{% endif %}
+<p>Training runs separately on GitHub Actions, not inside Render. The website continues using its previous model if a training run fails.</p>
+<p class="note">The scheduled run is at 07:00 UTC daily. You can also start it manually from the Actions tab in the V5 GitHub repository.</p>
+</section>{% endblock %}
