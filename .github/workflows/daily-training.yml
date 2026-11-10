@@ -3,7 +3,7 @@ name: Daily V5 model training
 on:
   pull_request:
   schedule:
-    - cron: "0 7 * * *"
+    - cron: "0 3 * * *"  # 03:00 UTC = 03:00 GMT / 04:00 BST
   workflow_dispatch:
 
 concurrency:
