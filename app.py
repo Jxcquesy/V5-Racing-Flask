@@ -1,4 +1,4 @@
-"""V5 Flask application with daily expanding-window Top-3 model retraining."""
+"""V5 Flask replacement. Keeps the supplied frozen model and feature pipeline."""
 import io, os, secrets, json, math, re, time
 from datetime import date, timedelta
 from functools import wraps
@@ -9,7 +9,6 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from werkzeug.utils import secure_filename
 from v5_engine import select_daily
 from v5_fast_engine import predict_v5_fast
-from v5_training import train_daily_model
 from pdf_parser import extract
 
 ROOT=Path(__file__).resolve().parent
@@ -21,7 +20,6 @@ app.config['MAX_CONTENT_LENGTH']=49*1024*1024
 # The session cookie holds only small state; master CSV is kept in a local instance file.
 # On Render free hosting this file is EPHEMERAL and may disappear on redeploy/restart.
 INSTANCE=Path(app.instance_path); INSTANCE.mkdir(parents=True,exist_ok=True)
-TRAINING_STATUS=INSTANCE/'v5_training_status.json'
 
 def protected(fn):
     @wraps(fn)
@@ -183,17 +181,13 @@ def data():
         return redirect(url_for('data'))
     stats=None;missing=[];storage_error=None;years=[]
     try:
-        training_status=json.loads(TRAINING_STATUS.read_text()) if TRAINING_STATUS.exists() else None
-    except Exception:
-        training_status=None
-    try:
         years=storage_years()
         if years:
             stats,missing=master_stats(years,
                 request.args.get('start') if request.args.get('missing')=='1' else None,
                 request.args.get('end') if request.args.get('missing')=='1' else None)
     except Exception as e:storage_error=str(e)
-    return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET,training_status=training_status)
+    return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET)
 
 @app.get('/master/download')
 @protected
@@ -238,41 +232,9 @@ def selections():
             if request.form.get('verified')!='yes':raise ValueError('Please confirm you have checked the racecards.')
             for col in ('Jockey','Trainer','Distance'):
                 if col not in runners:runners[col]=''
-            available_years=[y for y in storage_years() if y>=2025]
-            year_files=[download_year(y) for y in available_years]
-            if not year_files:raise ValueError("Upload Master CSVs from 2025 onwards first")
-
-            # Retrain once per prediction date, and again if the source files change.
-            # The training function uses 1 Jan 2025 through the latest available day
-            # before this race date. A failed retrain leaves the last good model intact.
-            signature='|'.join(f"{p.name}:{p.stat().st_size}:{p.stat().st_mtime_ns}" for p in year_files)
-            try:
-                status=json.loads(TRAINING_STATUS.read_text()) if TRAINING_STATUS.exists() else {}
-            except Exception:
-                status={}
-            retrain_needed=(status.get('training_day')!=day.isoformat() or status.get('source_signature')!=signature)
-            training_warning=None
-            did_retrain=False
-            if retrain_needed:
-                try:
-                    trained=train_daily_model(year_files,MODEL,day,signature)
-                    status={**trained,'source_signature':signature,'status':'success'}
-                    did_retrain=True
-                    TRAINING_STATUS.parent.mkdir(parents=True,exist_ok=True)
-                    TRAINING_STATUS.write_text(json.dumps(status))
-                except Exception as train_error:
-                    training_warning=f"Daily retraining could not complete ({train_error}). V5 is using its last successfully saved model."
-                    if not MODEL.exists():
-                        raise RuntimeError(training_warning)
-            if not MODEL.exists():
-                raise RuntimeError("No trained V5 model is available.")
+            year_files=[download_year(y) for y in storage_years()]
+            if not year_files:raise ValueError("Upload yearly Master CSVs first")
             predictions=predict_v5_fast(year_files,runners,MODEL,day)
-            if training_warning:
-                flash(training_warning,'error')
-            elif did_retrain:
-                flash(f"AI retrained for {day:%d %b %Y} using results from 1 Jan 2025 to {status.get('trained_until','the latest available date')}.",'success')
-            else:
-                flash(f"Today's V5 model is ready. Its latest training data runs through {status.get('trained_until','the latest available date')}.",'success')
             selected=select_daily(predictions).copy()
             selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
             selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
