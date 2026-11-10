@@ -47,8 +47,7 @@ def predict_v5_fast(paths, runners, model_path, race_date, chunksize=12000):
         if missing:raise ValueError(f'{path.name} missing: '+', '.join(missing))
         for chunk in pd.read_csv(path,usecols=NEEDED,chunksize=chunksize,low_memory=False):
             dates=pd.to_datetime(chunk.RaceDate,format='%d-%b-%y',errors='coerce')
-            # Match the daily training window: 1 Jan 2025 through the day before the target.
-            chunk=chunk.loc[dates.ge(pd.Timestamp('2025-01-01')) & dates.lt(day)].copy()
+            chunk=chunk.loc[dates.lt(day)].copy()
             if chunk.empty:continue
             # The original builder counts every historical row for jockey/trainer,
             # including non-runners (top3=0), and excludes invalid horse/course rows.
