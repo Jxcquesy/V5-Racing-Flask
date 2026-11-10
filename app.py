@@ -183,13 +183,17 @@ def data():
         return redirect(url_for('data'))
     stats=None;missing=[];storage_error=None;years=[]
     try:
+        training_status=json.loads(TRAINING_STATUS.read_text()) if TRAINING_STATUS.exists() else None
+    except Exception:
+        training_status=None
+    try:
         years=storage_years()
         if years:
             stats,missing=master_stats(years,
                 request.args.get('start') if request.args.get('missing')=='1' else None,
                 request.args.get('end') if request.args.get('missing')=='1' else None)
     except Exception as e:storage_error=str(e)
-    return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET)
+    return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET,training_status=training_status)
 
 @app.get('/master/download')
 @protected
