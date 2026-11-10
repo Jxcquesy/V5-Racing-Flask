@@ -88,10 +88,17 @@ def latest_model_path():
             if bundle.get('features') != FEATURES or bundle.get('target') != 'top3':
                 raise ValueError('Downloaded model feature/target schema does not match this V5 app.')
             temp.replace(cached)
-            app.logger.info(
-                'Using daily V5 model trained through %s (%s rows).',
-                bundle.get('training_end', bundle.get('cutoff', 'unknown')),
-                bundle.get('training_rows', 'unknown')
+            info = {
+                'source': 'Supabase daily model',
+                'training_start': bundle.get('training_start', 'unknown'),
+                'training_end': bundle.get('training_end', bundle.get('cutoff', 'unknown')),
+                'training_rows': bundle.get('training_rows', 'unknown'),
+                'trained_at_utc': bundle.get('trained_at_utc', 'unknown'),
+            }
+            app.config['V5_MODEL_INFO'] = info
+            app.logger.warning(
+                '[V5_MODEL] DOWNLOADED FROM SUPABASE — training %s to %s; %s rows; trained at %s.',
+                info['training_start'], info['training_end'], info['training_rows'], info['trained_at_utc']
             )
             return cached
         finally:
@@ -102,11 +109,27 @@ def latest_model_path():
             try:
                 bundle = joblib.load(cached)
                 if isinstance(bundle, dict) and callable(getattr(bundle.get('model'), 'predict_proba', None)) and bundle.get('features') == FEATURES and bundle.get('target') == 'top3':
-                    app.logger.warning('Using previously downloaded V5 model cache.')
+                    app.config['V5_MODEL_INFO'] = {
+                        'source': 'Previously downloaded cache',
+                        'training_start': bundle.get('training_start', 'unknown'),
+                        'training_end': bundle.get('training_end', bundle.get('cutoff', 'unknown')),
+                        'training_rows': bundle.get('training_rows', 'unknown'),
+                        'trained_at_utc': bundle.get('trained_at_utc', 'unknown'),
+                    }
+                    app.logger.warning('[V5_MODEL] USING PREVIOUSLY DOWNLOADED CACHE — training %s to %s; %s rows; trained at %s.',
+                        app.config['V5_MODEL_INFO']['training_start'], app.config['V5_MODEL_INFO']['training_end'],
+                        app.config['V5_MODEL_INFO']['training_rows'], app.config['V5_MODEL_INFO']['trained_at_utc'])
                     return cached
             except Exception as cache_exc:
                 app.logger.warning('Cached V5 model is invalid: %s', cache_exc)
-        app.logger.warning('Falling back to bundled V5 model.')
+        app.config['V5_MODEL_INFO'] = {
+            'source': 'Bundled fallback model',
+            'training_start': 'Unknown',
+            'training_end': 'Unknown',
+            'training_rows': 'Unknown',
+            'trained_at_utc': 'Unknown',
+        }
+        app.logger.error('[V5_MODEL] FALLING BACK TO BUNDLED MODEL — no valid Supabase model or cache was available.')
         return MODEL
 
 def storage_years():
@@ -279,7 +302,9 @@ def selections():
                 if col not in runners:runners[col]=''
             year_files=[download_year(y) for y in storage_years()]
             if not year_files:raise ValueError("Upload yearly Master CSVs first")
-            predictions=predict_v5_fast(year_files,runners,latest_model_path(),day)
+            model_path=latest_model_path()
+            model_info=app.config.get('V5_MODEL_INFO', {'source':'Unknown model','training_start':'Unknown','training_end':'Unknown','training_rows':'Unknown','trained_at_utc':'Unknown'})
+            predictions=predict_v5_fast(year_files,runners,model_path,day)
             selected=select_daily(predictions).copy()
             selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
             selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
@@ -287,12 +312,12 @@ def selections():
             for p in selected.to_dict('records'):
                 prob=float(p['Top 3 Probability'])
                 picks.append({'horse':str(p['Horse']),'course':str(p['Course']),'time':str(p['Time']),'probability':prob,'min_odds':1.05/prob if prob>0 else None,'race_date':day.isoformat()})
-            session['picks']=picks;session['pick_index']=0
+            session['picks']=picks;session['pick_index']=0;session['model_info']=model_info
             flash(f'{len(picks)} V5 selections generated.','success')
             return redirect(url_for('selections'))
         except Exception as e:flash('Prediction failed: '+str(e),'error')
     picks=session.get('picks',[]);i=max(0,min(int(request.args.get('i',session.get('pick_index',0))),max(0,len(picks)-1)))
-    return render_template('selections.html',picks=picks,index=i,today=date.today().isoformat(),master_ready=bool(storage_years()),slip_count=len(session.get('slip',[])))
+    return render_template('selections.html',picks=picks,index=i,today=date.today().isoformat(),master_ready=bool(storage_years()),slip_count=len(session.get('slip',[])),model_info=session.get('model_info'))
 
 @app.post('/slip/add')
 @protected
