@@ -13,7 +13,7 @@ This is a **separate Flask rebuild** of the uploaded V5 Streamlit repository. Th
 ## Important limitations
 
 - **Master CSV storage is temporary** on Render's free instance filesystem. It can be lost after restart/redeploy. Download a backup after every merge. Permanent master storage needs a database or object storage integration.
-- - **Daily retraining is enabled when selections are generated for a new race date.** Training uses completed results dated 1 January 2025 through the latest date before the target race day. If the latest results have not been uploaded, V5 trains on the latest available data already in Supabase. It retrains again if the stored yearly Master files change.
+- **Daily retraining is enabled when selections are generated for a new race date.** Training uses completed results dated 1 January 2025 through the latest date before the target race day. If the latest results have not been uploaded, V5 trains on the latest available data already in Supabase. It retrains again if the stored yearly Master files change.
 - If a training run fails, the last successfully saved model is kept and used for predictions; the dashboard reports the last successful training date. Training runs on demand before predictions, not as a separate midnight background job.
 - Automatic results fetching is not implemented: results still need to be merged/uploaded to Supabase.
 - The PDF parser is best-effort and is reused unchanged. Unlike the Streamlit app, this Flask version currently has **no editable racecard verification grid**; upload a corrected CSV if the PDF extraction needs corrections.
