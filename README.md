@@ -1,6 +1,6 @@
 # V5 Racing Predictor — Flask / Render
 
-This is a **separate Flask rebuild** of the uploaded V5 Streamlit repository. The supplied `v5_engine.py`, feature pipeline, PDF parser, and frozen `v5_top3_model.joblib` are reused unchanged. V4 is not involved.
+This is a **separate Flask rebuild** of the uploaded V5 Streamlit repository. The V5 Flask application uses the existing feature pipeline and PDF parser. V4 is not involved. The bundled model is retained as a fallback; a fresh model is fitted for each new prediction date.
 
 ## Deploy to Render
 
@@ -13,7 +13,9 @@ This is a **separate Flask rebuild** of the uploaded V5 Streamlit repository. Th
 ## Important limitations
 
 - **Master CSV storage is temporary** on Render's free instance filesystem. It can be lost after restart/redeploy. Download a backup after every merge. Permanent master storage needs a database or object storage integration.
-- The original V5 app had **no validated training pipeline**, so automatic training remains disabled. Automatic results fetching is not implemented.
+- - **Daily retraining is enabled when selections are generated for a new race date.** Training uses completed results dated 1 January 2025 through the latest date before the target race day. If the latest results have not been uploaded, V5 trains on the latest available data already in Supabase. It retrains again if the stored yearly Master files change.
+- If a training run fails, the last successfully saved model is kept and used for predictions; the dashboard reports the last successful training date. Training runs on demand before predictions, not as a separate midnight background job.
+- Automatic results fetching is not implemented: results still need to be merged/uploaded to Supabase.
 - The PDF parser is best-effort and is reused unchanged. Unlike the Streamlit app, this Flask version currently has **no editable racecard verification grid**; upload a corrected CSV if the PDF extraction needs corrections.
 - Supabase betting history uses the existing `v5_bets` table and compatible fields. No migration or history re-entry is needed. The £/unit setting is used for display but is not stored because the supplied Supabase schema does not include a unit-value column.
 - The app uses password protection and server-side Supabase credentials. The login password should be private; for multi-user access add proper account-based authentication.
