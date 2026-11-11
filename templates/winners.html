@@ -1,0 +1,26 @@
+{% extends 'base.html' %}{% block content %}
+<h1>V5 Top 10 Winner AI</h1>
+<section class="card"><h2>Generate today's 10 most likely winners</h2>
+{% if not master_ready %}<p class="alert error">Upload your Master CSVs on the Data page first.</p>{% endif %}
+<form method="post" enctype="multipart/form-data">
+<label>Race date<input type="date" name="race_date" value="{{today}}" required></label>
+<label>Racecard PDFs (multiple allowed)<input type="file" name="pdfs" accept=".pdf" multiple></label>
+<p class="note">Or supply a corrected runner CSV instead of PDFs:</p>
+<label>Corrected racecard CSV<input type="file" name="runners" accept=".csv"></label>
+<label class="check"><input type="checkbox" name="verified" value="yes" required> I checked the racecards, non-runners, going, class and distance</label>
+<button class="primary" {% if not master_ready %}disabled{% endif %}>Generate 10 Winner predictions</button>
+</form>
+<p class="note">This is a separate win-probability model. It does not reuse or alter the existing Top 3 probabilities.</p></section>
+{% if model_info %}<section class="card"><h2>Winner model training information</h2>
+<p>Training data: {{model_info.training_start}} to {{model_info.training_end}}</p>
+<p>Training records: {{model_info.training_rows}}</p><p>Model trained: {{model_info.trained_at_utc}}</p><p class="note">Source: {{model_info.source}}</p></section>{% endif %}
+{% if picks %}<section class="card"><h2>Today's 10 winner selections</h2><p class="note">One horse per race · Ranked by V5 win probability · Displayed in race-time order</p>
+{% for p in picks %}<article class="pick">
+<p class="note">Selection {{loop.index}} of {{picks|length}} · {{p.time}} · {{p.course}}</p>
+<h2>{{p.horse}}</h2>
+<div class="metrics"><div><b>{{'%.1f'|format(p.probability*100)}}%</b><small>Estimated win chance</small></div><div><b>{{'%.2f'|format(p.min_odds) if p.min_odds else '—'}}</b><small>Model target odds*</small></div></div>
+<div class="progress"><div style="width:{{p.probability*100}}%"></div></div>
+<form method="post" action="{{url_for('add_winner_leg')}}"><input type="hidden" name="index" value="{{loop.index0}}"><label>Bet365 WIN decimal odds<input type="number" name="odds" min="1.01" max="1001" step="0.01" value="2.00" required></label><button class="primary">Add WIN selection to Betslip</button></form>
+</article>{% endfor %}
+<p class="note">*Target odds are indicative model odds with a 5% margin, not a guaranteed value price. Fewer than 10 selections may be returned if fewer than 10 eligible races are available.</p></section>{% endif %}
+{% endblock %}
