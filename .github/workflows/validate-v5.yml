@@ -1,0 +1,32 @@
+name: Validate V5 code
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out V5
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python files
+        run: python -m py_compile app.py v5_feature_reference.py v5_fast_engine.py train_v5_daily.py
+      - name: Validate new templates
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from jinja2 import Environment
+          env = Environment()
+          for name in ("winners.html", "backtest.html"):
+              env.from_string(Path("templates", name).read_text(encoding="utf-8"))
+              print(f"Template OK: {name}")
+          PY
