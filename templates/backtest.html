@@ -2,7 +2,7 @@
 <h1>V5 Winner AI – Historical Backtest</h1>
 <section class="card">
 {% if error %}<p class="alert error">{{error}}</p>{% endif %}
-{% if report %}
+{% if report and report.status == 'success' %}
 <h2>Chronological holdout results</h2>
 <p>Test period: <b>{{report.test_start}}</b> to <b>{{report.test_end}}</b></p>
 <p>Training runners: {{'{:,}'.format(report.training_rows)}}</p>
@@ -22,6 +22,6 @@
 <p class="note">{{report.selection_rule}}</p>
 <a class="button" href="{{url_for('download_backtest')}}">⬇️ Download every backtest selection</a>
 <hr><p class="note">{{report.odds_and_roi}}</p>
-{% endif %}
+{% elif report %}<p class="note">Backtest status: {{report.status}} — {{report.message}}</p>{% endif %}
 </section>
 {% endblock %}
