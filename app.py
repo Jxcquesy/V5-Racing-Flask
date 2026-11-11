@@ -309,6 +309,43 @@ def data():
     except Exception as e:storage_error=str(e)
     return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET)
 
+@app.get('/backtest')
+@protected
+def backtest():
+    report=None
+    error=None
+    try:
+        url,_=storage_config()
+        response=requests.get(
+            f"{url}/storage/v1/object/{BUCKET}/models/v5_winner_backtest.json",
+            headers=storage_headers(),timeout=30
+        )
+        if response.status_code==404:
+            error="No Winner AI backtest has been published yet. Run the Daily V5 model training workflow in GitHub Actions."
+        else:
+            response.raise_for_status()
+            report=response.json()
+    except Exception as exc:
+        error=str(exc)
+    return render_template('backtest.html',report=report,error=error)
+
+
+@app.get('/backtest/download')
+@protected
+def download_backtest():
+    url,_=storage_config()
+    response=requests.get(
+        f"{url}/storage/v1/object/{BUCKET}/models/v5_winner_backtest.csv",
+        headers=storage_headers(),timeout=60
+    )
+    if not response.ok:
+        flash("Winner backtest CSV is not available yet. Run the daily training workflow first.", "error")
+        return redirect(url_for('backtest'))
+    from flask import Response
+    return Response(response.content,mimetype="text/csv",headers={
+        "Content-Disposition": 'attachment; filename="v5_winner_backtest.csv"'})
+
+
 @app.get('/master/download')
 @protected
 def download_master():
