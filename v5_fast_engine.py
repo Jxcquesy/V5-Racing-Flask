@@ -89,5 +89,9 @@ def predict_v5_fast(paths, runners, model_path, race_date, chunksize=12000, targ
     out.columns=['Course','Time','Horse','Runners',label,'Prior Runs']
     out=out[out.Runners>=6].copy()
     out['Race']=out.Course.astype(str)+' '+out.Time.astype(str)
-    out['Race Rank']=out.groupby('Race')['Top 3 Probability'].rank(ascending=False,method='first').astype(int)
-    return out.sort_values('Top 3 Probability',ascending=False).reset_index(drop=True)
+    # Rank and sort using the active model's probability label. The Winner model
+    # emits 'Win Probability'; the original V5 model emits 'Top 3 Probability'.
+    # Keeping this target-aware prevents the Winner route from looking for a
+    # Top 3-only column while leaving the Top 3 output unchanged.
+    out['Race Rank']=out.groupby('Race')[label].rank(ascending=False,method='first').astype(int)
+    return out.sort_values(label,ascending=False).reset_index(drop=True)
