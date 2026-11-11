@@ -13,7 +13,10 @@ Do not paste either value into chat, source code, or a committed file. The exist
 
 The workflow writes two objects into that same bucket:
 
-- `models/v5_top3_model.joblib`: the latest successfully trained model.
+- `models/v5_top3_model.joblib`: the existing Top 3 model (same target and feature definitions).
+- `models/v5_winner_model.joblib`: the separate first-place / WIN probability model.
+- `models/v5_winner_backtest.json`: chronological 60-day holdout metrics.
+- `models/v5_winner_backtest.csv`: every daily Top 10 selection and its result.
 - `models/training_status.json`: the last training outcome and date coverage.
 
 No new bucket is required.
@@ -30,11 +33,15 @@ The workflow is also scheduled daily at 07:00 UTC. GitHub Actions may delay sche
 
 ## Training rules
 
-- Uses the existing V5 feature definitions and HistGradientBoosting model family.
+- Keeps the existing V5 Top 3 model and trains it as before.
+- Also trains a separate Winner model against finishing position 1, using the same 42 V5 features and HistGradientBoosting model family.
+- Runs a chronological holdout backtest: train before the final 60 calendar days, then select up to 10 horses per test day, with no more than one selection per race and a minimum field size of 6.
 - Uses valid completed results dated from 1 January 2025 up to, but not including, the current UK race date.
 - If the latest results have not been uploaded, it uses the latest available date in Supabase; it does not wait for yesterday's results.
 - Retrains each day regardless of the previous model's betting or prediction performance.
-- Checks the new model's feature compatibility and probability output before publication.
+- Checks both models' feature compatibility and probability output before publication.
+- Reports winner strike rate, field-size random baseline, winner capture rate, Brier score and ROC AUC.
+- Does not report profit/ROI because the Master results CSV does not contain matched pre-race bookmaker odds; odds must not be invented.
 - The old model remains available in the Render app if training fails or no new model has been published.
 
 The training job does not fetch new race results. Results must first be added to the yearly Master CSVs in Supabase.
