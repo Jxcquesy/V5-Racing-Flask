@@ -1,0 +1,27 @@
+{% extends 'base.html' %}{% block content %}
+<h1>V5 Winner AI – Historical Backtest</h1>
+<section class="card">
+{% if error %}<p class="alert error">{{error}}</p>{% endif %}
+{% if report %}
+<h2>Chronological holdout results</h2>
+<p>Test period: <b>{{report.test_start}}</b> to <b>{{report.test_end}}</b></p>
+<p>Training runners: {{'{:,}'.format(report.training_rows)}}</p>
+<p>Test runners: {{'{:,}'.format(report.test_runner_rows)}}</p>
+<div class="metrics">
+<div><b>{{report.wins}} / {{report.selections}}</b><small>Winners selected</small></div>
+<div><b>{{'%.1f'|format(report.strike_rate*100)}}%</b><small>Winner strike rate</small></div>
+<div><b>{{'%.1f'|format(report.random_field_baseline*100) if report.random_field_baseline is not none else '—'}}%</b><small>Field-size random baseline</small></div>
+</div>
+<div class="metrics">
+<div><b>{{report.days}}</b><small>Test days</small></div>
+<div><b>{{report.eligible_races}}</b><small>Eligible races</small></div>
+<div><b>{{'%.3f'|format(report.roc_auc) if report.roc_auc is not none else '—'}}</b><small>Runner-level ROC AUC</small></div>
+</div>
+<p>Winner capture rate: {{'%.1f'|format(report.winner_capture_rate*100) if report.winner_capture_rate is not none else '—'}}%</p>
+<p>Brier score: {{report.brier_score if report.brier_score is not none else '—'}}</p>
+<p class="note">{{report.selection_rule}}</p>
+<a class="button" href="{{url_for('download_backtest')}}">⬇️ Download every backtest selection</a>
+<hr><p class="note">{{report.odds_and_roi}}</p>
+{% endif %}
+</section>
+{% endblock %}
