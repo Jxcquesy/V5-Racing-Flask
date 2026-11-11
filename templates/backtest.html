@@ -21,7 +21,33 @@
 <p>Brier score: {{report.brier_score if report.brier_score is not none else '—'}}</p>
 <p class="note">{{report.selection_rule}}</p>
 <a class="button" href="{{url_for('download_backtest')}}">⬇️ Download every backtest selection</a>
-<hr><p class="note">{{report.odds_and_roi}}</p>
-{% elif report %}<p class="note">Backtest status: {{report.status}} — {{report.message}}</p>{% endif %}
+<hr>
+<h2>£1 win-only SP results</h2>
+{% if sp_report %}
+<div class="metrics">
+<div><b>£{{'%.2f'|format(sp_report.stake)}}</b><small>Total staked</small></div>
+<div><b>£{{'%.2f'|format(sp_report.matched_returns)}}</b><small>{% if sp_report.complete %}Total returns{% else %}Returns matched so far{% endif %}</small></div>
+<div><b>{% if sp_report.complete %}{% if sp_report.profit >= 0 %}+{% endif %}£{{'%.2f'|format(sp_report.profit)}}{% else %}Pending match{% endif %}</b><small>{% if sp_report.complete %}Net profit / loss{% else %}Final P/L not confirmed{% endif %}</small></div>
+</div>
+<p class="note">Matched SP for {{sp_report.matched_wins}} of {{sp_report.total_wins}} winning selections. {% if sp_report.missing_sp %}{{sp_report.missing_sp}} winning SP value(s) could not be matched, so the final return and P/L are not yet confirmed.{% else %}All winning selections have an SP match. Returns include the £1 stake; losing selections are included in the £{{'%.2f'|format(sp_report.stake)}} total stake.{% endif %}</p>
+<h3>Winning selections ({{sp_report.total_wins}})</h3>
+<div style="overflow-x:auto">
+<table>
+<thead><tr><th>Date</th><th>Time</th><th>Course</th><th>Horse</th><th>SP</th><th>£1 return</th></tr></thead>
+<tbody>
+{% for w in sp_report.winners %}
+<tr>
+<td>{{w.date}}</td><td>{{w.time}}</td><td>{{w.course}}</td><td><b>{{w.horse}}</b></td>
+<td>{% if w.sp is not none %}{{'%.2f'|format(w.sp)}}{% else %}Not matched{% endif %}</td>
+<td>{% if w.returned is not none %}£{{'%.2f'|format(w.returned)}}{% else %}—{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% else %}
+<p class="note">SP results are not available: {{report.odds_and_roi}}</p>
+{% endif %}
+{% endif %}
 </section>
 {% endblock %}
