@@ -14,7 +14,7 @@ from v5_feature_reference import build_features, clean_text
 
 NEEDED=['RaceDate','Course','RaceTime','HorseName','FPos','Ran','Type','Going','Yards','Class','WeightLBS','OR','Jockey','Trainer','Age']
 
-def predict_v5_fast(paths, runners, model_path, race_date, chunksize=12000):
+def predict_v5_fast(paths, runners, model_path, race_date, chunksize=12000, target='top3'):
     day=pd.Timestamp(race_date)
     r=runners.copy().reset_index(drop=True)
     if r.empty:raise ValueError('No racecard runners')
@@ -80,9 +80,13 @@ def predict_v5_fast(paths, runners, model_path, race_date, chunksize=12000):
     pack=joblib.load(model_path) # Trusted model bundled with this repository.
     missing=set(pack['features'])-set(current.columns)
     if missing:raise ValueError('Missing model features: '+str(sorted(missing)))
-    current['prob_top3']=pack['model'].predict_proba(current[pack['features']].astype('float32'))[:,1]
-    out=current[['course','time','horse','field','prob_top3','prior_runs']].copy()
-    out.columns=['Course','Time','Horse','Runners','Top 3 Probability','Prior Runs']
+    if pack.get('target', 'top3') != target:
+        raise ValueError('Model target mismatch: expected ' + target + ', got ' + str(pack.get('target')))
+    probability_column = 'prob_win' if target == 'win' else 'prob_top3'
+    label = 'Win Probability' if target == 'win' else 'Top 3 Probability'
+    current[probability_column]=pack['model'].predict_proba(current[pack['features']].astype('float32'))[:,1]
+    out=current[['course','time','horse','field',probability_column,'prior_runs']].copy()
+    out.columns=['Course','Time','Horse','Runners',label,'Prior Runs']
     out=out[out.Runners>=6].copy()
     out['Race']=out.Course.astype(str)+' '+out.Time.astype(str)
     out['Race Rank']=out.groupby('Race')['Top 3 Probability'].rank(ascending=False,method='first').astype(int)
