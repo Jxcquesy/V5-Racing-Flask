@@ -309,11 +309,83 @@ def data():
     except Exception as e:storage_error=str(e)
     return render_template('data.html',stats=stats,missing=missing,today=date.today().isoformat(),years=years,storage_error=storage_error,bucket=BUCKET)
 
+
+def winner_sp_backtest():
+    """Join the saved Winner AI holdout picks to SP in the private yearly Master CSVs."""
+    url,_=storage_config()
+    response=requests.get(
+        f"{url}/storage/v1/object/{BUCKET}/models/v5_winner_backtest.csv",
+        headers=storage_headers(),timeout=60
+    )
+    response.raise_for_status()
+    picks=pd.read_csv(io.BytesIO(response.content),low_memory=False)
+    required=['race_date','course','time','horse','result']
+    missing=[c for c in required if c not in picks.columns]
+    if missing:raise ValueError('Backtest export is missing: '+', '.join(missing))
+    picks=picks.copy()
+    picks['race_date']=pd.to_datetime(picks['race_date'],errors='coerce').dt.strftime('%Y-%m-%d')
+    picks['_course']=picks['course'].astype(str).str.strip().str.casefold()
+    picks['_horse']=picks['horse'].astype(str).str.strip().str.casefold()
+    picks['_time']=picks['time'].astype(str).str.strip().str[:5]
+    picks['_key']=list(zip(picks['race_date'],picks['_course'],picks['_time'],picks['_horse']))
+    target_years=sorted({int(x[:4]) for x in picks['race_date'].dropna()})
+    sp_by_key={}
+    for year in target_years:
+        path=download_year(year)
+        header=pd.read_csv(path,nrows=0,low_memory=False).columns.tolist()
+        lookup={str(c).strip().casefold():c for c in header}
+        wanted=['racedate','course','racetime','horsename','sp']
+        absent=[c for c in wanted if c not in lookup]
+        if absent:raise ValueError(f'{path.name} is missing required SP match columns: {", ".join(absent)}')
+        usecols=[lookup[c] for c in wanted]
+        for chunk in pd.read_csv(path,usecols=usecols,chunksize=100000,low_memory=False):
+            chunk['_date']=pd.to_datetime(chunk[lookup['racedate']],errors='coerce',dayfirst=True).dt.strftime('%Y-%m-%d')
+            chunk['_course']=chunk[lookup['course']].astype(str).str.strip().str.casefold()
+            chunk['_time']=chunk[lookup['racetime']].astype(str).str.strip().str[:5]
+            chunk['_horse']=chunk[lookup['horsename']].astype(str).str.strip().str.casefold()
+            chunk['_key']=list(zip(chunk['_date'],chunk['_course'],chunk['_time'],chunk['_horse']))
+            relevant=chunk.loc[chunk['_date'].str[:4].eq(str(year)),['_key',lookup['sp']]]
+            for key,value in relevant.itertuples(index=False,name=None):
+                if key not in sp_by_key and pd.notna(value):
+                    raw=str(value).strip().lower().replace(' ', '')
+                    try:
+                        if '/' in raw:
+                            a,b=raw.split('/',1);decimal=float(a)/float(b)+1
+                        elif raw in ('evens','even','evs','ev'):
+                            decimal=2.0
+                        else:
+                            decimal=float(raw)
+                        if decimal>1:sp_by_key[key]=decimal
+                    except (ValueError,ZeroDivisionError):
+                        continue
+            del chunk
+    picks['_sp']=[sp_by_key.get(k) for k in picks['_key']]
+    winners=picks.loc[picks['result'].astype(str).str.upper().eq('WON')].copy()
+    winners=winners.sort_values(['race_date','time','course','horse'],kind='stable')
+    matched=int(winners['_sp'].notna().sum())
+    total_wins=int(len(winners))
+    total_selections=int(len(picks))
+    gross=float(winners['_sp'].sum()) if matched else 0.0
+    complete=matched==total_wins and total_wins>0
+    return {
+        'winners':[{'date':r['race_date'],'time':r['time'],'course':r['course'],'horse':r['horse'],
+                    'sp':float(r['_sp']) if pd.notna(r['_sp']) else None,
+                    'stake':1.0,'returned':float(r['_sp']) if pd.notna(r['_sp']) else None}
+                   for _,r in winners.iterrows()],
+        'total_wins':total_wins,'matched_wins':matched,
+        'missing_sp':total_wins-matched,'selections':total_selections,
+        'stake':float(total_selections),'matched_returns':gross,
+        'complete':complete,
+        'profit':gross-float(total_selections) if complete else None,
+    }
+
+
 @app.get('/backtest')
 @protected
 def backtest():
     report=None
     error=None
+    sp_report=None
     try:
         url,_=storage_config()
         response=requests.get(
@@ -325,9 +397,15 @@ def backtest():
         else:
             response.raise_for_status()
             report=response.json()
+            if report.get('status')=='success':
+                try:
+                    sp_report=winner_sp_backtest()
+                    report['odds_and_roi']="SP matched from the Master database."
+                except Exception as exc:
+                    report['odds_and_roi']="SP returns could not be calculated: "+str(exc)
     except Exception as exc:
         error=str(exc)
-    return render_template('backtest.html',report=report,error=error)
+    return render_template('backtest.html',report=report,error=error,sp_report=sp_report)
 
 
 @app.get('/backtest/download')
