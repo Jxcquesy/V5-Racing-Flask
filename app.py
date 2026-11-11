@@ -132,6 +132,58 @@ def latest_model_path():
         app.logger.error('[V5_MODEL] FALLING BACK TO BUNDLED MODEL — no valid Supabase model or cache was available.')
         return MODEL
 
+
+def latest_winner_model_path():
+    """Fetch the separately trained win-probability model from private Storage."""
+    cached = INSTANCE / "v5_winner_model.latest.joblib"
+    temp = INSTANCE / "v5_winner_model.latest.tmp"
+    try:
+        url, _ = storage_config()
+        response = requests.get(
+            f"{url}/storage/v1/object/{BUCKET}/models/v5_winner_model.joblib",
+            headers=storage_headers(), timeout=45, stream=True
+        )
+        response.raise_for_status()
+        try:
+            with temp.open("wb") as out:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        out.write(chunk)
+            bundle = joblib.load(temp)
+            if not isinstance(bundle, dict) or bundle.get("features") != FEATURES or bundle.get("target") != "win":
+                raise ValueError("Downloaded V5 Winner model is invalid or has an incompatible schema.")
+            if not callable(getattr(bundle.get("model"), "predict_proba", None)):
+                raise ValueError("Downloaded V5 Winner model cannot produce probabilities.")
+            temp.replace(cached)
+            app.config["V5_WINNER_MODEL_INFO"] = {
+                "source": "Supabase daily Winner model",
+                "training_start": bundle.get("training_start", "unknown"),
+                "training_end": bundle.get("training_end", "unknown"),
+                "training_rows": bundle.get("training_rows", "unknown"),
+                "trained_at_utc": bundle.get("trained_at_utc", "unknown"),
+            }
+            return cached
+        finally:
+            temp.unlink(missing_ok=True)
+    except Exception as exc:
+        app.logger.warning("Could not fetch latest V5 Winner model: %s", exc)
+        if cached.exists():
+            try:
+                bundle = joblib.load(cached)
+                if isinstance(bundle, dict) and bundle.get("features") == FEATURES and bundle.get("target") == "win":
+                    app.config["V5_WINNER_MODEL_INFO"] = {
+                        "source": "Previously downloaded Winner cache",
+                        "training_start": bundle.get("training_start", "unknown"),
+                        "training_end": bundle.get("training_end", "unknown"),
+                        "training_rows": bundle.get("training_rows", "unknown"),
+                        "trained_at_utc": bundle.get("trained_at_utc", "unknown"),
+                    }
+                    return cached
+            except Exception as cache_exc:
+                app.logger.warning("Cached V5 Winner model is invalid: %s", cache_exc)
+        raise RuntimeError("No trained V5 Winner model is available yet. Run the Daily V5 model training workflow first.") from exc
+
+
 def storage_years():
     url,_=storage_config()
     r=requests.post(f'{url}/storage/v1/object/list/{BUCKET}',headers=storage_headers('application/json'),json={'prefix':'','limit':1000,'offset':0},timeout=30)
@@ -318,6 +370,75 @@ def selections():
         except Exception as e:flash('Prediction failed: '+str(e),'error')
     picks=session.get('picks',[]);i=max(0,min(int(request.args.get('i',session.get('pick_index',0))),max(0,len(picks)-1)))
     return render_template('selections.html',picks=picks,index=i,today=date.today().isoformat(),master_ready=bool(storage_years()),slip_count=len(session.get('slip',[])),model_info=session.get('model_info'))
+
+
+@app.route('/winners',methods=['GET','POST'])
+@protected
+def winners():
+    picks=session.get('winner_picks',[])
+    if request.method=='POST':
+        try:
+            day=date.fromisoformat(request.form.get('race_date',''))
+            csv=request.files.get('runners')
+            pdfs=[f for f in request.files.getlist('pdfs') if f and f.filename]
+            if csv and csv.filename:
+                if not csv.filename.lower().endswith('.csv'):raise ValueError('Racecard file must be CSV.')
+                runners=pd.read_csv(io.BytesIO(csv.read()))
+            elif pdfs:
+                if any(not f.filename.lower().endswith('.pdf') for f in pdfs):raise ValueError('Racecards must be PDF files.')
+                runners,issues=extract([PDFUpload(f) for f in pdfs],day)
+                for issue in issues:flash(issue,'error')
+            else:raise ValueError('Upload a corrected racecard CSV or PDF racecards.')
+            if runners.empty:raise ValueError('No racecard runners found.')
+            if request.form.get('verified')!='yes':raise ValueError('Please confirm you have checked the racecards.')
+            for col in ('Jockey','Trainer','Distance'):
+                if col not in runners:runners[col]=''
+            year_files=[download_year(y) for y in storage_years()]
+            if not year_files:raise ValueError('Upload yearly Master CSVs first.')
+            model_path=latest_winner_model_path()
+            model_info=app.config.get('V5_WINNER_MODEL_INFO', {})
+            predictions=predict_v5_fast(year_files,runners,model_path,day,target='win')
+            selected=select_daily(predictions, n=10).copy()
+            selected['_sort']=pd.to_datetime(selected.Time.astype(str),format='%H:%M',errors='coerce')
+            selected=selected.sort_values(['_sort','Course','Horse'],kind='stable').drop(columns='_sort')
+            winner_picks=[]
+            for p in selected.to_dict('records'):
+                prob=float(p['Win Probability'])
+                winner_picks.append({'horse':str(p['Horse']),'course':str(p['Course']),
+                    'time':str(p['Time']),'probability':prob,
+                    'min_odds':1.05/prob if prob>0 else None,'race_date':day.isoformat(),
+                    'market':'WIN','model':'V5 Winner'})
+            session['winner_picks']=winner_picks
+            session['winner_model_info']=model_info
+            flash(f'{len(winner_picks)} V5 Winner selections generated.', 'success')
+            return redirect(url_for('winners'))
+        except Exception as e:
+            flash('Winner prediction failed: '+str(e),'error')
+    return render_template('winners.html',picks=picks,today=date.today().isoformat(),
+        master_ready=bool(storage_years()),model_info=session.get('winner_model_info'),
+        slip_count=len(session.get('slip',[])))
+
+
+@app.post('/winner-slip/add')
+@protected
+def add_winner_leg():
+    picks=session.get('winner_picks',[])
+    try:
+        i=int(request.form.get('index','-1'))
+        if i<0 or i>=len(picks):raise ValueError('Invalid Winner selection')
+        p=picks[i]
+        odds=float(request.form.get('odds',''))
+        if not 1.01<=odds<=1001:raise ValueError('Odds must be between 1.01 and 1001')
+        slip=session.get('slip',[])
+        key=(p['race_date'],p['course'],p['time'],p['horse'],'WIN')
+        slip=[x for x in slip if (x['race_date'],x['course'],x['time'],x['horse'],x.get('market','TOP3'))!=key]
+        slip.append({**p,'odds':odds})
+        session['slip']=slip
+        flash('Winner selection added to betslip.','success')
+    except Exception as e:
+        flash(str(e),'error')
+    return redirect(url_for('winners'))
+
 
 @app.post('/slip/add')
 @protected
