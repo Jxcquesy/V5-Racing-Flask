@@ -25,6 +25,9 @@ from v5_feature_reference import FEATURES, build_features
 BUCKET = os.getenv("MASTER_BUCKET", "v5-master")
 START_DATE = pd.Timestamp("2025-01-01")
 MODEL_OBJECT = "models/v5_top3_model.joblib"
+WINNER_MODEL_OBJECT = "models/v5_winner_model.joblib"
+BACKTEST_CSV_OBJECT = "models/v5_winner_backtest.csv"
+BACKTEST_JSON_OBJECT = "models/v5_winner_backtest.json"
 STATUS_OBJECT = "models/training_status.json"
 REQUIRED = [
     "RaceDate", "Course", "RaceTime", "HorseName", "FPos", "Ran", "Type",
@@ -107,6 +110,86 @@ def download_master_files():
     return temp_dir, paths
 
 
+
+def fit_classifier(frame, target_column):
+    model = HistGradientBoostingClassifier(
+        max_iter=140,
+        max_leaf_nodes=19,
+        learning_rate=0.055,
+        l2_regularization=10,
+        min_samples_leaf=80,
+        random_state=42,
+    )
+    model.fit(frame[FEATURES].astype("float32"), frame[target_column].astype("int8"))
+    return model
+
+
+def winner_backtest(features, latest_date, output_dir):
+    """Chronological holdout: train only before the last 60 calendar days."""
+    test_start = max(START_DATE, latest_date - pd.Timedelta(days=59))
+    train = features.loc[features["valid_finish"] & features["date"].lt(test_start)].copy()
+    test = features.loc[features["valid_finish"] & features["date"].ge(test_start) & features["date"].le(latest_date)].copy()
+    train = train.drop_duplicates(["date", "course", "time", "horse"])
+    test = test.drop_duplicates(["date", "course", "time", "horse"])
+    if len(train) < 5000 or len(test) < 500:
+        return {"status": "insufficient_data", "test_start": test_start.strftime("%Y-%m-%d"),
+                "test_end": latest_date.strftime("%Y-%m-%d"), "training_rows": int(len(train)),
+                "test_rows": int(len(test)), "message": "Not enough chronological holdout data yet."}, None
+
+    backtest_model = fit_classifier(train.assign(win=(train["finish"] == 1).astype("int8")), "win")
+    test = test.copy()
+    test["prob_win"] = backtest_model.predict_proba(test[FEATURES].astype("float32"))[:, 1]
+
+    # Pick the highest-rated runner in each race, then the best ten distinct
+    # races each day. This prevents multiple selections from the same race.
+    eligible = test.loc[test["field"].ge(6)].copy()
+    eligible = eligible.sort_values(["date", "race_id", "prob_win", "horse"],
+                                    ascending=[True, True, False, True], kind="stable")
+    race_picks = eligible.drop_duplicates(["date", "race_id"], keep="first")
+    picks = (race_picks.sort_values(["date", "prob_win", "race_id"],
+                                    ascending=[True, False, True], kind="stable")
+             .groupby("date", sort=False).head(10).copy())
+    picks["rank"] = picks.groupby("date").cumcount() + 1
+    picks["won"] = picks["finish"].eq(1)
+    picks["race_date"] = picks["date"].dt.strftime("%Y-%m-%d")
+    picks["result"] = np.where(picks["won"], "WON", "LOST")
+    csv_path = output_dir / "v5_winner_backtest.csv"
+    columns = ["race_date", "rank", "course", "time", "horse", "prob_win",
+               "finish", "field", "class_num", "going", "result"]
+    picks[columns].to_csv(csv_path, index=False)
+
+    known = test.loc[test["field"].ge(6)]
+    winners = int(known["finish"].eq(1).sum())
+    selected = int(len(picks))
+    wins = int(picks["won"].sum())
+    random_baseline = float((1.0 / picks["field"].clip(lower=1)).mean()) if selected else None
+    try:
+        from sklearn.metrics import brier_score_loss, roc_auc_score
+        brier = float(brier_score_loss(test["finish"].eq(1).astype("int8"), test["prob_win"]))
+        auc = float(roc_auc_score(test["finish"].eq(1).astype("int8"), test["prob_win"]))
+    except Exception:
+        brier, auc = None, None
+    summary = {
+        "status": "success",
+        "test_start": test_start.strftime("%Y-%m-%d"),
+        "test_end": latest_date.strftime("%Y-%m-%d"),
+        "training_rows": int(len(train)),
+        "test_runner_rows": int(len(test)),
+        "eligible_races": int(known["race_id"].nunique()),
+        "days": int(picks["date"].nunique()),
+        "selections": selected,
+        "wins": wins,
+        "strike_rate": round(wins / selected, 6) if selected else 0.0,
+        "random_field_baseline": round(random_baseline, 6) if random_baseline is not None else None,
+        "winner_capture_rate": round(wins / winners, 6) if winners else None,
+        "brier_score": round(brier, 6) if brier is not None else None,
+        "roc_auc": round(auc, 6) if auc is not None else None,
+        "selection_rule": "Top 10 win probabilities per day; maximum one horse per race; minimum 6 runners.",
+        "odds_and_roi": "Not calculated: the Master database does not contain matched pre-race bookmaker odds."
+    }
+    return summary, csv_path
+
+
 def run_training():
     started = datetime.now(timezone.utc)
     temp_dir, paths = download_master_files()
@@ -177,8 +260,38 @@ def run_training():
         }
         model_path = temp_dir / "v5_top3_model.joblib"
         joblib.dump(bundle, model_path, compress=3)
-        # Publish the model first; status=success is the commit marker.
+        # Preserve and publish the existing Top 3 champion exactly as before.
         put_object(MODEL_OBJECT, model_path, "application/octet-stream")
+
+        # Train an independent winner target using the same frozen V5 features.
+        winner_train = train.copy()
+        winner_train["win"] = winner_train["finish"].eq(1).astype("int8")
+        if winner_train["win"].nunique() != 2:
+            raise RuntimeError("Winner training data does not contain both winners and non-winners.")
+        winner_model = fit_classifier(winner_train, "win")
+        winner_sample = winner_train[FEATURES].astype("float32").iloc[: min(256, len(winner_train))]
+        winner_probs = winner_model.predict_proba(winner_sample)[:, 1]
+        if not np.isfinite(winner_probs).all() or ((winner_probs < 0) | (winner_probs > 1)).any():
+            raise RuntimeError("Winner model failed its probability integrity check.")
+        winner_bundle = {
+            "model": winner_model, "features": FEATURES, "cutoff": latest_date.strftime("%Y-%m-%d"),
+            "training_start": START_DATE.strftime("%Y-%m-%d"),
+            "training_end": latest_date.strftime("%Y-%m-%d"),
+            "prediction_day": target_day.strftime("%Y-%m-%d"),
+            "training_rows": int(len(winner_train)), "target": "win",
+            "model_version": "winner-daily-v1",
+            "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        winner_model_path = temp_dir / "v5_winner_model.joblib"
+        joblib.dump(winner_bundle, winner_model_path, compress=3)
+        put_object(WINNER_MODEL_OBJECT, winner_model_path, "application/octet-stream")
+
+        backtest_summary, backtest_csv = winner_backtest(features, latest_date, temp_dir)
+        if backtest_csv:
+            put_object(BACKTEST_CSV_OBJECT, backtest_csv, "text/csv")
+        backtest_json = temp_dir / "v5_winner_backtest.json"
+        backtest_json.write_text(json.dumps(backtest_summary, indent=2), encoding="utf-8")
+        put_object(BACKTEST_JSON_OBJECT, backtest_json, "application/json")
 
         finished = datetime.now(timezone.utc)
         status = {
@@ -189,7 +302,10 @@ def run_training():
             "training_end": latest_date.strftime("%Y-%m-%d"),
             "training_rows": int(len(train)),
             "source_years": [p.stem.replace("V5_Master_", "") for p in paths],
-            "message": "New V5 model successfully trained and published.",
+            "winner_training_rows": int(len(winner_train)),
+            "winner_model": WINNER_MODEL_OBJECT,
+            "winner_backtest": backtest_summary,
+            "message": "V5 Top 3 and independent Winner models successfully trained and published.",
         }
         put_status(status)
         print(json.dumps(status, indent=2), flush=True)
