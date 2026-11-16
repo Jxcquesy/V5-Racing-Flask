@@ -165,7 +165,7 @@ def add_dp_filter(features):
         x["dp_same_class_last_finish"].notna()
         & x["dp_same_class_last_field"].gt(0)
         & (x["dp_same_class_last_finish"] <=
-           (0.20 * x["dp_same_class_last_field"]).apply(__import__("math").ceil))
+           (0.20 * x["dp_same_class_last_field"].fillna(0)).apply(__import__("math").ceil))
     )
     x["dp_filter"] = (
         x["class_change"].gt(0)  # class number rises: easier class in this dataset
