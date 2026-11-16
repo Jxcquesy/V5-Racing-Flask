@@ -1,6 +1,7 @@
 """Train isolated V5.1 Top-3 experiments; never replace production V5."""
 import json
 import shutil
+from itertools import combinations
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -279,6 +280,28 @@ def run():
             isolated_filter_results.append(metrics)
             results.append(metrics)
             print(json.dumps(metrics), flush=True)
+        # Exhaustively test every non-empty combination of the four specialist
+        # feature groups (4 singles + 6 pairs + 4 triples + 1 all-groups).
+        # Each combination is a separately trained model using the union of
+        # its selected raw features; no probability blending is involved.
+        combination_results = []
+        group_names = list(FEATURE_GROUPS)
+        for size in range(1, len(group_names) + 1):
+            for selected_groups in combinations(group_names, size):
+                columns = list(dict.fromkeys(
+                    feature
+                    for group_name in selected_groups
+                    for feature in FEATURE_GROUPS[group_name]
+                ))
+                variant_name = "combination_" + "__".join(selected_groups)
+                _, probabilities = fit_probability_model(variant_name, columns, train, test)
+                metrics = evaluate_probabilities(
+                    variant_name, probabilities, test, len(columns)
+                )
+                metrics["included_groups"] = list(selected_groups)
+                combination_results.append(metrics)
+                print(json.dumps(metrics), flush=True)
+
         weight_results = []
         for profile_name, weights in WEIGHT_PROFILES.items():
             combined = sum(
@@ -356,6 +379,8 @@ def run():
                 if row["variant"] in ABLATIONS
             ],
             "isolated_filter_experiments": isolated_filter_results,
+            "all_filter_combinations": combination_results,
+            "filter_combination_count": len(combination_results),
             "weight_profiles": weight_results,
             "option_11_dp_filter": dp_filter_result,
             "shortlisted_variant": best["variant"],
@@ -375,7 +400,7 @@ def run():
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         put_object(REPORT_OBJECT, report_path, "application/json")
         csv_path = temp_dir / "v5_top3_v51_experiment_comparison.csv"
-        pd.DataFrame(results).to_csv(csv_path, index=False)
+        pd.DataFrame(results + combination_results).to_csv(csv_path, index=False)
         put_object(CSV_OBJECT, csv_path, "text/csv")
         print(json.dumps(report, indent=2), flush=True)
         return report
