@@ -288,7 +288,10 @@ def run():
         dp_filter_result = evaluate_dp_filter(test, component_probabilities["v5_baseline"])
         results.append(dp_filter_result)
         print(json.dumps(dp_filter_result), flush=True)
-        candidates = [row for row in results if row["variant"] != "v5_baseline"]
+        candidates = [
+            row for row in results
+            if row["variant"] not in {"v5_baseline", "option_11_dp_filter"}
+        ]
         best = min(candidates, key=lambda row: (row["brier_score"], -(row["roc_auc"] or 0)))
         best_columns = definitions.get(best["variant"])
 
