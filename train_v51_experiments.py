@@ -165,7 +165,7 @@ def add_dp_filter(features):
         x["dp_same_class_last_finish"].notna()
         & x["dp_same_class_last_field"].gt(0)
         & (x["dp_same_class_last_finish"] <=
-           (0.20 * x["dp_same_class_last_field"]).apply(__import__("math").ceil))
+           (0.20 * x["dp_same_class_last_field"].fillna(0)).apply(__import__("math").ceil))
     )
     x["dp_filter"] = (
         x["class_change"].gt(0)  # class number rises: easier class in this dataset
@@ -288,7 +288,10 @@ def run():
         dp_filter_result = evaluate_dp_filter(test, component_probabilities["v5_baseline"])
         results.append(dp_filter_result)
         print(json.dumps(dp_filter_result), flush=True)
-        candidates = [row for row in results if row["variant"] != "v5_baseline"]
+        candidates = [
+            row for row in results
+            if row["variant"] not in {"v5_baseline", "option_11_dp_filter"}
+        ]
         best = min(candidates, key=lambda row: (row["brier_score"], -(row["roc_auc"] or 0)))
         best_columns = definitions.get(best["variant"])
 
