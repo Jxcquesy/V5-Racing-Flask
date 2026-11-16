@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Check Python syntax
-        run: python -m py_compile app.py v5_feature_reference.py v5_fast_engine.py train_v5_daily.py
+        run: python -m py_compile app.py v5_feature_reference.py v5_fast_engine.py train_v5_daily.py train_v51_experiments.py
 
   train:
     if: github.event_name != 'pull_request'
@@ -46,3 +46,10 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MASTER_BUCKET: v5-master
         run: python train_v5_daily.py
+      - name: Train isolated V5.1 feature experiments (never replaces V5)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MASTER_BUCKET: v5-master
+        run: python train_v51_experiments.py
