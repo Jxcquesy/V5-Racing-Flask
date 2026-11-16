@@ -243,6 +243,9 @@ def master_stats(years, missing_start=None, missing_end=None):
         for part in pd.read_csv(download_year(year),usecols=['RaceDate'],chunksize=30000):
             total+=len(part)
             d=pd.to_datetime(part['RaceDate'],format='%d-%b-%y',errors='coerce')
+            if d.isna().any():
+                # Accept Excel date formats such as dd/mm/yyyy as well as the legacy dd-Mmm-yy format.
+                d=pd.to_datetime(part['RaceDate'],errors='coerce',dayfirst=True)
             if d.isna().any():raise ValueError(f'Invalid RaceDate in {year} Master')
             recorded.update(d.dt.date.unique())
     if not recorded:return None,[]
