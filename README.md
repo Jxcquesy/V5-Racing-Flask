@@ -22,16 +22,11 @@ This is a **separate Flask rebuild** of the uploaded V5 Streamlit repository. Th
 
 ## V5.1 experimental feature testing
 
-The daily GitHub Actions workflow now runs `train_v51_experiments.py` after the normal V5 training job. It compares the unchanged 42-feature baseline against controlled feature-group ablations on the same chronological 60-day holdout:
+The daily GitHub Actions workflow runs `train_v51_experiments.py` after normal V5 training. It compares the unchanged 42-feature baseline and four controlled feature-group ablations on the same chronological 60-day holdout. It also trains specialist models for recent form, ratings/class/distance, horse-and-connections history, and race/course/conditions.
 
-- Remove field size.
-- Reduce reliance on recent-form features.
-- Remove jockey/trainer historical-rate features.
-- Remove course/going/race-type historical-rate features.
+Six explicit probability-blend profiles are tested: balanced, recent-form-led, ratings-led, horse/connections-led, race-conditions-led, and equal specialist weights. Each profile blends specialist-model probabilities with the full V5 baseline. This is a meaningful way to test group weights for a tree model; simply multiplying input columns would not reliably change their influence. The report includes Brier score, log loss, ROC AUC, daily Top-3 strike rate, selection count, and the exact weights used.
 
-The report compares Brier score, log loss, ROC AUC and Top-3 strike rate using the same daily selection rule. A separate experimental model and report are published under `models/v5_top3_v51_*`. The live Flask app continues to load only `models/v5_top3_model.joblib`; V5.1 is not used for live selections and cannot overwrite production V5.
-
-These are feature-ablation experiments, not literal percentage weights. No betting ROI is claimed because the master results do not contain matched pre-race odds. The shortlisted model must undergo further shadow testing and demonstrate repeatable improvement before any production promotion.
+A separate experimental model, JSON report, and comparison CSV are published under `models/v5_top3_v51_*`. The live Flask app continues to load only `models/v5_top3_model.joblib`; V5.1 is not used for live selections and cannot overwrite production V5. The same holdout is used to compare candidates, so the shortlisted variant must undergo later untouched-period shadow testing before any production promotion. No betting ROI is claimed because matched pre-race odds are unavailable.
 
 ## Local test
 
