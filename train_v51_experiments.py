@@ -265,6 +265,37 @@ def run():
             results.append(metrics)
             print(json.dumps(metrics), flush=True)
 
+        # Test every one of the 42 raw features independently. Each model
+        # receives exactly one input column and uses the same chronological
+        # train/holdout split and model settings as the V5 baseline.
+        individual_feature_results = []
+        for feature in FEATURES:
+            _, probabilities = fit_probability_model(
+                f"single_feature_{feature}", [feature], train, test
+            )
+            metrics = evaluate_probabilities(
+                f"single_feature_{feature}", probabilities, test, 1
+            )
+            metrics["feature"] = feature
+            individual_feature_results.append(metrics)
+            print(json.dumps(metrics), flush=True)
+
+        # Leave-one-feature-out tests measure the marginal contribution of
+        # each feature when the other 41 inputs remain available.
+        leave_one_out_results = []
+        for removed_feature in FEATURES:
+            columns = [feature for feature in FEATURES if feature != removed_feature]
+            _, probabilities = fit_probability_model(
+                f"without_{removed_feature}", columns, train, test
+            )
+            metrics = evaluate_probabilities(
+                f"without_{removed_feature}", probabilities, test, len(columns)
+            )
+            metrics["removed_feature"] = removed_feature
+            metrics["brier_change_vs_baseline"] = None
+            leave_one_out_results.append(metrics)
+            print(json.dumps(metrics), flush=True)
+
         # Train one specialist model per independent filter group, then test
         # several explicit blends against the full-feature V5 baseline.
         isolated_filter_results = []
@@ -318,6 +349,10 @@ def run():
             print(json.dumps(metrics), flush=True)
 
         baseline = next(row for row in results if row["variant"] == "v5_baseline")
+        for row in leave_one_out_results:
+            row["brier_change_vs_baseline"] = float(
+                row["brier_score"] - baseline["brier_score"]
+            )
         dp_filter_result = evaluate_dp_filter(test, component_probabilities["v5_baseline"])
         results.append(dp_filter_result)
         print(json.dumps(dp_filter_result), flush=True)
@@ -374,6 +409,9 @@ def run():
             "training_rows": int(len(train)),
             "holdout_rows": int(len(test)),
             "baseline": baseline,
+            "individual_feature_experiments": individual_feature_results,
+            "leave_one_feature_out_experiments": leave_one_out_results,
+            "feature_experiment_count": len(individual_feature_results) + len(leave_one_out_results),
             "ablation_experiments": [
                 row for row in results
                 if row["variant"] in ABLATIONS
@@ -400,7 +438,7 @@ def run():
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         put_object(REPORT_OBJECT, report_path, "application/json")
         csv_path = temp_dir / "v5_top3_v51_experiment_comparison.csv"
-        pd.DataFrame(results + combination_results).to_csv(csv_path, index=False)
+        pd.DataFrame(results + combination_results + individual_feature_results + leave_one_out_results).to_csv(csv_path, index=False)
         put_object(CSV_OBJECT, csv_path, "text/csv")
         print(json.dumps(report, indent=2), flush=True)
         return report
