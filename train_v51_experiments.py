@@ -125,6 +125,87 @@ def fit_probability_model(name, columns, train, test):
     return model, probabilities
 
 
+def add_dp_filter(features):
+    """Build Defiant Punter rules using only earlier runs and current race declarations."""
+    x = features.copy()
+    # Latest previous run in the same class, based only on earlier race dates.
+    class_history = (
+        x.loc[x.valid_finish, ["horse", "date", "class_num", "finish", "field"]]
+        .drop_duplicates(["horse", "date", "class_num"])
+        .sort_values(["horse", "class_num", "date"], kind="stable")
+    )
+    class_groups = class_history.groupby(["horse", "class_num"], sort=False)
+    class_history["dp_same_class_last_finish"] = class_groups["finish"].shift(1)
+    class_history["dp_same_class_last_field"] = class_groups["field"].shift(1)
+    class_history = class_history[[
+        "horse", "date", "class_num", "dp_same_class_last_finish", "dp_same_class_last_field"
+    ]]
+    x = x.merge(class_history, on=["horse", "date", "class_num"], how="left", sort=False)
+
+    # Has this horse previously raced over today's exact distance?
+    distance_history = (
+        x[["horse", "date", "yards"]].drop_duplicates(["horse", "date", "yards"])
+        .sort_values(["horse", "yards", "date"], kind="stable")
+    )
+    distance_groups = distance_history.groupby(["horse", "yards"], sort=False)
+    distance_history["dp_prior_distance_runs"] = distance_groups.cumcount()
+    x = x.merge(
+        distance_history[["horse", "date", "yards", "dp_prior_distance_runs"]],
+        on=["horse", "date", "yards"], how="left", sort=False,
+    )
+
+    # Rank lower carried weights and older ages within each race.
+    x["dp_weight_percentile"] = x.groupby("race_id")["weight"].rank(
+        method="average", ascending=True, pct=True
+    )
+    x["dp_age_rank_oldest"] = x.groupby("race_id")["age"].rank(
+        method="min", ascending=False
+    )
+    x["dp_same_class_top20"] = (
+        x["dp_same_class_last_finish"].notna()
+        & x["dp_same_class_last_field"].gt(0)
+        & (x["dp_same_class_last_finish"] <=
+           (0.20 * x["dp_same_class_last_field"]).apply(__import__("math").ceil))
+    )
+    x["dp_filter"] = (
+        x["class_change"].gt(0)  # class number rises: easier class in this dataset
+        & x["dp_same_class_top20"]
+        & x["dp_weight_percentile"].le(0.50)
+        & x["dp_age_rank_oldest"].gt(3)
+        & x["dp_prior_distance_runs"].gt(0)
+    )
+    return x
+
+
+def evaluate_dp_filter(test, baseline_probabilities):
+    scored = test[["date", "race_id", "horse", "field", "finish", "dp_filter"]].copy()
+    scored["prob_top3"] = baseline_probabilities
+    eligible = scored.loc[scored.dp_filter & scored.field.ge(6)].sort_values(
+        ["date", "prob_top3", "race_id", "horse"],
+        ascending=[True, False, True, True], kind="stable",
+    )
+    picks = eligible.groupby("date", sort=False).head(10).copy()
+    picks["placed"] = picks.finish.between(1, 3)
+    days = int(picks.date.nunique())
+    return {
+        "variant": "option_11_dp_filter",
+        "filter_definition": {
+            "class_drop": "Today's class number is higher (easier) than the horse's previous run.",
+            "same_class_form": "Most recent previous run in today's class finished in the top 20% of that field.",
+            "weight": "Today's carried weight is in the lowest 50% of runners in the race.",
+            "age": "Horse is not among the three oldest runners in the race.",
+            "distance": "Horse has previously run today's exact distance.",
+        },
+        "eligible_runner_count": int(scored.dp_filter.sum()),
+        "test_days": days,
+        "daily_selections": int(len(picks)),
+        "top3_selections": int(picks.placed.sum()),
+        "top3_strike_rate": float(picks.placed.mean()) if len(picks) else None,
+        "average_selected_probability": float(picks.prob_top3.mean()) if len(picks) else None,
+        "selection_rule": "Among DP-filter qualifiers, select highest unchanged V5 baseline probability, up to 10 per day.",
+    }
+
+
 def run():
     started = datetime.now(timezone.utc)
     temp_dir, paths = download_master_files()
@@ -142,7 +223,7 @@ def run():
         if raw.empty:
             raise RuntimeError("No master results found from 1 January 2025 onwards.")
 
-        features = build_features(raw)
+        features = add_dp_filter(build_features(raw))
         del raw
         latest = features.loc[features.valid_finish, "date"].max()
         if pd.isna(latest):
@@ -204,6 +285,9 @@ def run():
             print(json.dumps(metrics), flush=True)
 
         baseline = next(row for row in results if row["variant"] == "v5_baseline")
+        dp_filter_result = evaluate_dp_filter(test, component_probabilities["v5_baseline"])
+        results.append(dp_filter_result)
+        print(json.dumps(dp_filter_result), flush=True)
         candidates = [row for row in results if row["variant"] != "v5_baseline"]
         best = min(candidates, key=lambda row: (row["brier_score"], -(row["roc_auc"] or 0)))
         best_columns = definitions.get(best["variant"])
@@ -259,12 +343,14 @@ def run():
                 if row["variant"] in ABLATIONS
             ],
             "weight_profiles": weight_results,
+            "option_11_dp_filter": dp_filter_result,
             "shortlisted_variant": best["variant"],
             "shortlisted_metrics": best,
             "baseline_brier_improvement": float(baseline["brier_score"] - best["brier_score"]),
             "promoted_to_production": False,
             "experimental_model_object": MODEL_OBJECT,
             "limitations": [
+                "The DP filter is a deterministic rule-based shortlist, not a trained probability model. Its strike rate and selection volume are reported separately.",
                 "Weight profiles blend separately trained specialist probabilities with the full V5 baseline.",
                 "The same chronological holdout is used to compare and shortlist variants; repeat testing on a later untouched period is required before promotion.",
                 "No betting ROI is calculated because matched pre-race odds are unavailable.",

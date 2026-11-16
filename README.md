@@ -26,6 +26,8 @@ The daily GitHub Actions workflow runs `train_v51_experiments.py` after normal V
 
 Six explicit probability-blend profiles are tested: balanced, recent-form-led, ratings-led, horse/connections-led, race-conditions-led, and equal specialist weights. Each profile blends specialist-model probabilities with the full V5 baseline. This is a meaningful way to test group weights for a tree model; simply multiplying input columns would not reliably change their influence. The report includes Brier score, log loss, ROC AUC, daily Top-3 strike rate, selection count, and the exact weights used.
 
+**Option 11 — Defiant Punter (DP) filter:** a rule-based shortlist, evaluated separately using the unchanged V5 baseline probabilities. A runner must (1) be dropping in class versus its previous run, (2) have finished in the top 20% of the field on its most recent previous run in today's class, (3) carry a weight in the lowest 50% of the current race, (4) not be among the three oldest runners, and (5) have previously run today's exact distance. The report records the eligible runner count, daily selections and Top-3 strike rate. This filter is not a probability model and is not promoted automatically.
+
 A separate experimental model, JSON report, and comparison CSV are published under `models/v5_top3_v51_*`. The live Flask app continues to load only `models/v5_top3_model.joblib`; V5.1 is not used for live selections and cannot overwrite production V5. The same holdout is used to compare candidates, so the shortlisted variant must undergo later untouched-period shadow testing before any production promotion. No betting ROI is claimed because matched pre-race odds are unavailable.
 
 ## Local test
