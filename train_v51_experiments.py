@@ -266,9 +266,19 @@ def run():
 
         # Train one specialist model per independent filter group, then test
         # several explicit blends against the full-feature V5 baseline.
+        isolated_filter_results = []
         for group_name, columns in FEATURE_GROUPS.items():
             _, probabilities = fit_probability_model(group_name, columns, train, test)
             component_probabilities[group_name] = probabilities
+            # Score each specialist on its own: no full-V5 baseline and no
+            # other specialist probabilities are blended into this result.
+            metrics = evaluate_probabilities(
+                f"isolated_{group_name}_only", probabilities, test, len(columns)
+            )
+            metrics["filter_group"] = group_name
+            isolated_filter_results.append(metrics)
+            results.append(metrics)
+            print(json.dumps(metrics), flush=True)
         weight_results = []
         for profile_name, weights in WEIGHT_PROFILES.items():
             combined = sum(
@@ -345,6 +355,7 @@ def run():
                 row for row in results
                 if row["variant"] in ABLATIONS
             ],
+            "isolated_filter_experiments": isolated_filter_results,
             "weight_profiles": weight_results,
             "option_11_dp_filter": dp_filter_result,
             "shortlisted_variant": best["variant"],
