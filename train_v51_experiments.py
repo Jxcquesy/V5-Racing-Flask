@@ -174,22 +174,20 @@ def run():
             definitions[name] = [feature for feature in FEATURES if feature not in removed]
 
         # First compare the unchanged baseline and controlled ablations.
+        component_probabilities = {}
         for name, columns in definitions.items():
             _, probabilities = fit_probability_model(name, columns, train, test)
+            if name == "v5_baseline":
+                component_probabilities["v5_baseline"] = probabilities
             metrics = evaluate_probabilities(name, probabilities, test, len(columns))
             results.append(metrics)
             print(json.dumps(metrics), flush=True)
 
         # Train one specialist model per independent filter group, then test
         # several explicit blends against the full-feature V5 baseline.
-        component_probabilities = {}
         for group_name, columns in FEATURE_GROUPS.items():
             _, probabilities = fit_probability_model(group_name, columns, train, test)
             component_probabilities[group_name] = probabilities
-        component_probabilities["v5_baseline"] = fit_probability_model(
-            "v5_baseline_for_blends", list(FEATURES), train, test
-        )[1]
-
         weight_results = []
         for profile_name, weights in WEIGHT_PROFILES.items():
             combined = sum(
