@@ -20,6 +20,19 @@ This is a **separate Flask rebuild** of the uploaded V5 Streamlit repository. Th
 - The model is loaded from a trusted, owner-supplied joblib file. Do not replace it with an untrusted file.
 - Render free web services may sleep when idle, and a paid plan may be required for more reliable availability.
 
+## V5.1 experimental feature testing
+
+The daily GitHub Actions workflow now runs `train_v51_experiments.py` after the normal V5 training job. It compares the unchanged 42-feature baseline against controlled feature-group ablations on the same chronological 60-day holdout:
+
+- Remove field size.
+- Reduce reliance on recent-form features.
+- Remove jockey/trainer historical-rate features.
+- Remove course/going/race-type historical-rate features.
+
+The report compares Brier score, log loss, ROC AUC and Top-3 strike rate using the same daily selection rule. A separate experimental model and report are published under `models/v5_top3_v51_*`. The live Flask app continues to load only `models/v5_top3_model.joblib`; V5.1 is not used for live selections and cannot overwrite production V5.
+
+These are feature-ablation experiments, not literal percentage weights. No betting ROI is claimed because the master results do not contain matched pre-race odds. The shortlisted model must undergo further shadow testing and demonstrate repeatable improvement before any production promotion.
+
 ## Local test
 
 ```bash
